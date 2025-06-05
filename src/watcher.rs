@@ -17,7 +17,7 @@ pub(crate) struct EbuildJob {
 }
 
 /// struct for tracking ebuild processes
-pub(crate) struct EmergeProcWatcher {
+pub(crate) struct EbuildProcWatcher {
     /// active jobs
     /// HashMap ensures we don't capture jobs multiple times
     active: HashMap<Pid, EbuildJob>,
@@ -26,7 +26,7 @@ pub(crate) struct EmergeProcWatcher {
     tx: Sender<Vec<EbuildJob>>,
 }
 
-impl EmergeProcWatcher {
+impl EbuildProcWatcher {
     /// create new EmergeProcWatcher
     pub(crate) fn new(tx: Sender<Vec<EbuildJob>>) -> Self {
         Self {

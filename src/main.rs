@@ -3,7 +3,7 @@ mod watcher;
 use tokio::sync::mpsc;
 use tokio::task;
 
-use crate::watcher::EbuildJob;
+use crate::watcher::{EbuildJob, EbuildProcWatcher};
 
 /// Discord API client ID
 const CLIENT_ID: &str = "CHANGEME";
@@ -15,7 +15,7 @@ const REFRESH_INTERVAL: u64 = 5;
 async fn main() {
     let (tx, mut rx) = mpsc::channel::<Vec<EbuildJob>>(1);
 
-    let watcher = watcher::EmergeProcWatcher::new(tx);
+    let watcher = EbuildProcWatcher::new(tx);
     task::spawn(watcher.start());
 
     while let Some(jobs) = rx.recv().await {
