@@ -125,10 +125,12 @@ impl RPCHandler {
                 .assets(Assets::new().large_image("gentoo_box"));
 
             // state (2nd line) is None if emerge doesn't have jobs running
-            let mut myphases = String::from("None"); // need to extend lifetime out of if-scope
+            let _myphases; // need to extend lifetime out of if-scope
             if let Some(phases) = phases.clone() {
-                myphases = phases;
-                activity = activity.state(&myphases);
+                _myphases = phases;
+                activity = activity.state(&_myphases);
+            } else {
+                _myphases = String::from("None");
             }
 
             // start time is only set if jobs are running
@@ -140,7 +142,7 @@ impl RPCHandler {
             #[cfg(debug_assertions)]
             println!(
                 "Sending update: state=\"{}\", details=\"{}\", start_time=\"{}\"",
-                &myphases,
+                &_myphases,
                 &info,
                 &start_time.unwrap_or(-1)
             );
