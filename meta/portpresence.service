@@ -1,0 +1,8 @@
+[Unit]
+Description=Discord Rich Presence for Portage
+
+[Service]
+ExecStart=/usr/bin/portpresence
+
+[Install]
+WantedBy=default.target
