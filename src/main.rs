@@ -1,36 +1,29 @@
+mod rpchandler;
 mod watcher;
 
 use tokio::sync::mpsc;
-use tokio::task;
+use tokio::task::JoinSet;
 
+use crate::rpchandler::RPCHandler;
 use crate::watcher::{EbuildJob, EbuildProcWatcher};
 
 /// Discord API client ID
-const CLIENT_ID: &str = "CHANGEME";
+const CLIENT_ID: &str = "1367276666665041960";
 
-// refresh interval in seconds
+// process refresh interval in seconds
 const REFRESH_INTERVAL: u64 = 5;
 
 #[tokio::main]
 async fn main() {
-    let (tx, mut rx) = mpsc::channel::<Vec<EbuildJob>>(1);
+    let (tx, rx) = mpsc::channel::<Vec<EbuildJob>>(1);
+
+    let mut tasks = JoinSet::new();
 
     let watcher = EbuildProcWatcher::new(tx);
-    task::spawn(watcher.start());
+    tasks.spawn(watcher.start());
 
-    while let Some(jobs) = rx.recv().await {
-        #[cfg(debug_assertions)]
-        println!("Got Jobs");
-        for job in jobs {
-            #[cfg(debug_assertions)]
-            println!(
-                "{}, {}, {}, {}, {}",
-                job.category,
-                job.package,
-                job.version,
-                job.phase,
-                job.create_time.as_secs(),
-            )
-        }
-    }
+    let rpchandler = RPCHandler::new(rx);
+    tasks.spawn(rpchandler.start());
+
+    tasks.join_all().await;
 }

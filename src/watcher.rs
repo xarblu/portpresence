@@ -1,6 +1,8 @@
+use procfs::{Current, Uptime};
 use psutil::Pid;
 use psutil::process::ProcessCollector;
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::Sender;
 use tokio::time::{self, Duration};
 
@@ -9,10 +11,22 @@ use crate::REFRESH_INTERVAL;
 /// job metadata
 #[derive(Clone)]
 pub(crate) struct EbuildJob {
+    /// ebuild category
     pub(crate) category: String,
+
+    /// ebuild package
     pub(crate) package: String,
+
+    /// ebuild version
     pub(crate) version: String,
+
+    /// ebuild phase
     pub(crate) phase: String,
+
+    /// job process creation time in unix epoch duration
+    /// because each phase start a new sandbox process
+    /// this will reset with each phase
+    /// TODO: maybe walk further up the proc tree and match `emerge` process
     pub(crate) create_time: Duration,
 }
 
@@ -37,7 +51,7 @@ impl EbuildProcWatcher {
 
     /// continuesly watch processes for matches
     /// and update active table
-    pub(crate) async fn start(mut self) -> ! {
+    pub(crate) async fn start(mut self) -> Result<(), String> {
         // if this fails we want the panic
         let mut collector = ProcessCollector::new().unwrap();
 
@@ -150,7 +164,7 @@ impl EbuildProcWatcher {
                                 package: p,
                                 version: v,
                                 phase: String::from(cmdline[3]),
-                                create_time: current.create_time(),
+                                create_time: proc_time_to_unix_time(current.create_time()),
                             },
                         );
 
@@ -159,13 +173,22 @@ impl EbuildProcWatcher {
                 }
             }
 
-            // if we have jobs send them
-            if !self.active.is_empty() {
-                self.tx
-                    .send(self.active.values().cloned().collect())
-                    .await
-                    .unwrap();
+            // send the job list
+            if self
+                .tx
+                .send(self.active.values().cloned().collect())
+                .await
+                .is_err()
+            {
+                return Err(String::from("Connection to RPC handler died"));
             }
         }
     }
+}
+
+/// convert process creation time to unix time
+fn proc_time_to_unix_time(proc_time: Duration) -> Duration {
+    let uptime = Uptime::current().unwrap().uptime_duration();
+    let currtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    currtime - uptime + proc_time
 }
