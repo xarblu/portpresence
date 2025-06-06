@@ -9,7 +9,7 @@ use tokio::time::{self, Duration};
 use crate::REFRESH_INTERVAL;
 
 /// job metadata
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct EbuildJob {
     /// ebuild category
     pub(crate) category: String,
@@ -63,8 +63,16 @@ impl EbuildProcWatcher {
                 continue;
             }
 
-            // clear out current jobs
-            self.active.clear();
+            // track if we actually changed something
+            let mut changed = false;
+
+            // remove finished jobs
+            let pids: Vec<Pid> = self.active.keys().cloned().collect();
+            for pid in pids {
+                if !&collector.processes.contains_key(&pid) && self.active.remove(&pid).is_some() {
+                    changed = true;
+                }
+            }
 
             // look for running ebuild processes
             for (pid, process) in &collector.processes {
@@ -157,30 +165,49 @@ impl EbuildProcWatcher {
                             }
                         }
 
-                        self.active.insert(
-                            current.pid(),
-                            EbuildJob {
-                                category: String::from(c),
-                                package: p,
-                                version: v,
-                                phase: String::from(cmdline[3]),
-                                create_time: proc_time_to_unix_time(current.create_time()),
-                            },
-                        );
+                        let new = EbuildJob {
+                            category: String::from(c),
+                            package: p,
+                            version: v,
+                            phase: String::from(cmdline[3]),
+                            create_time: proc_time_to_unix_time(current.create_time()),
+                        };
+
+                        let old = self.active.get(&current.pid());
+
+                        // break early if it wouldn't update
+                        if old.is_some() && old.unwrap().clone() == new {
+                            break;
+                        }
+
+                        // update
+                        self.active.insert(current.pid(), new);
+                        changed = true;
 
                         break; // got all we need from this tree
                     }
                 }
             }
 
-            // send the job list
-            if self
-                .tx
-                .send(self.active.values().cloned().collect())
-                .await
-                .is_err()
-            {
-                return Err(String::from("Connection to RPC handler died"));
+            // send the job list if changed
+            match changed {
+                false => {
+                    #[cfg(debug_assertions)]
+                    println!("Job list unchanged ({} items)", self.active.len());
+                }
+                true => {
+                    #[cfg(debug_assertions)]
+                    println!("Job list updated ({} items)", self.active.len());
+
+                    if self
+                        .tx
+                        .send(self.active.values().cloned().collect())
+                        .await
+                        .is_err()
+                    {
+                        return Err(String::from("Connection to RPC handler died"));
+                    }
+                }
             }
         }
     }
