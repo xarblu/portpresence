@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use crate::rpchandler::RPCHandler;
-use crate::watcher::{EbuildJob, EbuildProcWatcher};
+use crate::watcher::{ActiveJobs, EbuildProcWatcher};
 
 /// Discord API client ID
 const CLIENT_ID: &str = "1367276666665041960";
@@ -15,7 +15,7 @@ const REFRESH_INTERVAL: u64 = 5;
 
 #[tokio::main]
 async fn main() {
-    let (tx, rx) = mpsc::channel::<Vec<EbuildJob>>(1);
+    let (tx, rx) = mpsc::channel::<ActiveJobs>(1);
 
     let mut tasks = JoinSet::new();
 

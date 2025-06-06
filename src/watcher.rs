@@ -1,12 +1,14 @@
 use procfs::{Current, Uptime};
 use psutil::Pid;
-use psutil::process::ProcessCollector;
-use std::collections::HashMap;
+use psutil::process::{Process, ProcessCollector};
+use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::Sender;
 use tokio::time::{self, Duration};
 
 use crate::REFRESH_INTERVAL;
+
+pub(crate) type ActiveJobs = HashMap<Pid, HashMap<Pid, EbuildJob>>;
 
 /// job metadata
 #[derive(Clone, PartialEq)]
@@ -32,17 +34,17 @@ pub(crate) struct EbuildJob {
 
 /// struct for tracking ebuild processes
 pub(crate) struct EbuildProcWatcher {
-    /// active jobs
+    /// active jobs as: {"emerge master pid": {"ebuild job pid": {job...}}}
     /// HashMap ensures we don't capture jobs multiple times
-    active: HashMap<Pid, EbuildJob>,
+    active: ActiveJobs,
 
     /// sender for updates
-    tx: Sender<Vec<EbuildJob>>,
+    tx: Sender<ActiveJobs>,
 }
 
 impl EbuildProcWatcher {
     /// create new EmergeProcWatcher
-    pub(crate) fn new(tx: Sender<Vec<EbuildJob>>) -> Self {
+    pub(crate) fn new(tx: Sender<ActiveJobs>) -> Self {
         Self {
             active: HashMap::new(),
             tx,
@@ -67,11 +69,37 @@ impl EbuildProcWatcher {
             let mut changed = false;
 
             // remove finished jobs
-            let pids: Vec<Pid> = self.active.keys().cloned().collect();
-            for pid in pids {
-                if !&collector.processes.contains_key(&pid) && self.active.remove(&pid).is_some() {
+            let masters: Vec<Pid> = self.active.keys().cloned().collect();
+            for master in masters {
+                // first check if we can remove an entire subtree
+                if !&collector.processes.contains_key(&master)
+                    && self.active.remove(&master).is_some()
+                {
                     changed = true;
+                    continue;
                 }
+
+                // the check jobs under master
+                let jobs: Vec<Pid> = self.active.get(&master).unwrap().keys().cloned().collect();
+                for job in jobs {
+                    if !&collector.processes.contains_key(&job)
+                        && self.active.get_mut(&master).unwrap().remove(&job).is_some()
+                    {
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+
+            // grab all running emerge processes and make sure they
+            // exist in our tree
+            let emerge_procs = get_emerge_procs(&collector.processes);
+            for process in emerge_procs {
+                if self.active.contains_key(&process.pid()) {
+                    continue;
+                }
+                self.active.insert(process.pid(), HashMap::new());
+                changed = true;
             }
 
             // look for running ebuild processes
@@ -111,7 +139,7 @@ impl EbuildProcWatcher {
                     };
 
                     #[cfg(debug_assertions)]
-                    println!("Parsing process {}", current.pid());
+                    println!("Parsing parent process {}", current.pid());
 
                     // cmdline_vec() doesn't help us because apparently
                     // the sandbox likes to merge multiple args...
@@ -125,10 +153,7 @@ impl EbuildProcWatcher {
 
                     let cmdline: Vec<&str> = cmdline_str.split_ascii_whitespace().collect();
 
-                    #[cfg(debug_assertions)]
-                    println!("It has {} parts: {}", cmdline.len(), cmdline.join(", "));
-
-                    // we want a sandbox process like (won't qu):
+                    // we want a sandbox process like:
                     // [sys-kernel/cachyos-kernel-6.15.1] sandbox /usr/lib/portage/pypy3.11/ebuild.sh compile
                     if cmdline.len() == 4
                         && cmdline[0].starts_with("[")
@@ -138,6 +163,13 @@ impl EbuildProcWatcher {
                     {
                         #[cfg(debug_assertions)]
                         println!("Process {} looks correct...", current.pid());
+
+                        // try to find master process, if that doesn't exist drop this job
+                        // this means we won't match manual `ebuild` invocations
+                        let master = match get_managing_emerge_proc(&current) {
+                            Some(ps) => ps,
+                            None => break,
+                        };
 
                         let cpv = cmdline[0].trim_matches(['[', ']']);
                         let (c, pv) = cpv.split_once('/').unwrap();
@@ -173,16 +205,39 @@ impl EbuildProcWatcher {
                             create_time: proc_time_to_unix_time(current.create_time()),
                         };
 
-                        let old = self.active.get(&current.pid());
-
-                        // break early if it wouldn't update
-                        if old.is_some() && old.unwrap().clone() == new {
-                            break;
+                        match self.active.get(&master.pid()) {
+                            // full tree not present
+                            None => {
+                                self.active.insert(master.pid(), HashMap::new());
+                                self.active
+                                    .get_mut(&master.pid())
+                                    .unwrap()
+                                    .insert(current.pid(), new);
+                                changed = true;
+                            }
+                            Some(map) => match map.get(&current.pid()) {
+                                // job not present in tree
+                                None => {
+                                    self.active
+                                        .get_mut(&master.pid())
+                                        .unwrap()
+                                        .insert(current.pid(), new);
+                                    changed = true;
+                                }
+                                Some(old) => {
+                                    // if jobs are equal we don't want an update
+                                    if new == old.clone() {
+                                        break;
+                                    }
+                                    // job present and new one different
+                                    self.active
+                                        .get_mut(&master.pid())
+                                        .unwrap()
+                                        .insert(current.pid(), new);
+                                    changed = true;
+                                }
+                            },
                         }
-
-                        // update
-                        self.active.insert(current.pid(), new);
-                        changed = true;
 
                         break; // got all we need from this tree
                     }
@@ -199,12 +254,7 @@ impl EbuildProcWatcher {
                     #[cfg(debug_assertions)]
                     println!("Job list updated ({} items)", self.active.len());
 
-                    if self
-                        .tx
-                        .send(self.active.values().cloned().collect())
-                        .await
-                        .is_err()
-                    {
+                    if self.tx.send(self.active.clone()).await.is_err() {
                         return Err(String::from("Connection to RPC handler died"));
                     }
                 }
@@ -218,4 +268,82 @@ fn proc_time_to_unix_time(proc_time: Duration) -> Duration {
     let uptime = Uptime::current().unwrap().uptime_duration();
     let currtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     currtime - uptime + proc_time
+}
+
+/// parse a process list for emerge processes
+fn get_emerge_procs(processes: &BTreeMap<Pid, Process>) -> Vec<Process> {
+    #[cfg(debug_assertions)]
+    println!("Looking for emerge processes");
+
+    let mut emerge_procs = Vec::new();
+    for process in processes.values() {
+        let cmdline_str = match process.cmdline() {
+            Ok(maybe_cmdline) => match maybe_cmdline {
+                Some(cmdline) => cmdline,
+                None => continue, // kernel thread
+            },
+            Err(_) => continue, // process died already
+        };
+
+        let cmdline: Vec<&str> = cmdline_str.split_ascii_whitespace().collect();
+
+        // now we look for any emerge process like:
+        // /usr/bin/pypy3.11 /usr/lib/python-exec/pypy3.11/emerge args...
+        if cmdline.len() < 2 {
+            continue;
+        }
+
+        // check if cmdline matches
+        // leading "/" makes this not match e.g. sudo emerge
+        if cmdline[1].ends_with("/emerge") {
+            #[cfg(debug_assertions)]
+            println!("Found emerge process {}: {}", process.pid(), cmdline_str);
+
+            emerge_procs.push(process.clone());
+        }
+    }
+    emerge_procs
+}
+
+/// get managing emerge process of process like
+/// /usr/bin/pypy3.11 /usr/lib/python-exec/pypy3.11/emerge args...
+/// we will match the first one in case of e.g. `sudo emerge ..args`
+fn get_managing_emerge_proc(process: &Process) -> Option<Process> {
+    #[cfg(debug_assertions)]
+    println!("Looking for managing emerge for {}", process.pid());
+
+    let mut current = process.clone();
+    loop {
+        // go up one layer
+        current = match current.parent() {
+            Ok(ps) => ps?,         // returns None if parent dead
+            Err(_) => return None, // current dead
+        };
+
+        #[cfg(debug_assertions)]
+        println!("Parsing parent process {}", current.pid());
+
+        // cmdline_vec() doesn't help us because apparently
+        // the sandbox likes to merge multiple args...
+        let cmdline_str = match current.cmdline() {
+            Ok(maybe_cmdline) => match maybe_cmdline {
+                Some(cmdline) => cmdline,
+                None => continue, // kernel thread
+            },
+            Err(_) => continue, // process died
+        };
+
+        let cmdline: Vec<&str> = cmdline_str.split_ascii_whitespace().collect();
+
+        if cmdline.len() < 2 {
+            continue;
+        }
+
+        if cmdline[1].ends_with("/emerge") {
+            #[cfg(debug_assertions)]
+            println!("Found emerge process {}: {}", current.pid(), cmdline_str);
+
+            return Some(current);
+        }
+    }
 }

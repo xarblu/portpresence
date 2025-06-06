@@ -7,16 +7,16 @@ use tokio::sync::mpsc::Receiver;
 use tokio::time::sleep;
 
 use crate::CLIENT_ID;
-use crate::watcher::EbuildJob;
+use crate::watcher::ActiveJobs;
 
 pub(crate) struct RPCHandler {
     /// sender for updates
-    rx: Receiver<Vec<EbuildJob>>,
+    rx: Receiver<ActiveJobs>,
 }
 
 impl RPCHandler {
     /// create new RPCHandler
-    pub(crate) fn new(rx: Receiver<Vec<EbuildJob>>) -> Self {
+    pub(crate) fn new(rx: Receiver<ActiveJobs>) -> Self {
         Self { rx }
     }
 
@@ -37,7 +37,7 @@ impl RPCHandler {
         println!("Connected to Discord");
 
         let mut cleared = true;
-        while let Some(jobs) = self.rx.recv().await {
+        while let Some(job_trees) = self.rx.recv().await {
             #[cfg(debug_assertions)]
             println!("Handler received update");
 
@@ -45,7 +45,7 @@ impl RPCHandler {
             let mut should_reconnect = false;
 
             // clear on empty set
-            if jobs.is_empty() {
+            if job_trees.is_empty() {
                 // don't clear multiple times
                 if cleared {
                     continue;
@@ -60,18 +60,28 @@ impl RPCHandler {
             }
             cleared = false;
 
+            // now redefine jobs to a combination of all trees
+            let mut jobs = Vec::new();
+            for job_tree in job_trees.values() {
+                for job in job_tree.values() {
+                    jobs.push(job);
+                }
+            }
+
             // first line
-            let first = match jobs.len() {
+            let info = match jobs.len() {
+                0 => String::from("No Jobs Running"),
                 1 => format!(
                     "{}/{}-{}",
                     jobs[0].category, jobs[0].package, jobs[0].version
                 ),
-                _ => format!("Running {} Jobs", jobs.len()),
+                _ => format!("{} Jobs Running", jobs.len()),
             };
 
-            // second line
-            let second = match jobs.len() {
-                1 => format!("Phase: {}", jobs[0].phase),
+            // phase info of running jobs
+            let phases = match jobs.len() {
+                0 => None,
+                1 => Some(format!("Phase: {}", jobs[0].phase)),
                 _ => {
                     let mut counter: HashMap<String, u32> = HashMap::new();
                     for job in &jobs {
@@ -90,38 +100,52 @@ impl RPCHandler {
                             phases_vec.push(format!("{} ({})", phase, count));
                         }
                     }
-                    format!("Phases: {}", phases_vec.join(", "))
+                    Some(format!("Phases: {}", phases_vec.join(", ")))
                 }
             };
 
             // timestamp
             let start_time = match jobs.len() {
-                1 => jobs[0].create_time.as_secs(),
+                0 => None,
+                1 => Some(jobs[0].create_time.as_secs() as i64),
                 _ => {
-                    let mut min: u64 = jobs[0].create_time.as_secs();
+                    let mut min: i64 = jobs[0].create_time.as_secs() as i64;
                     for job in &jobs[1..] {
-                        let this = job.create_time.as_secs();
+                        let this = job.create_time.as_secs() as i64;
                         if this < min {
                             min = this;
                         }
                     }
-                    min
+                    Some(min)
                 }
             };
+
+            let mut activity = Activity::new()
+                .details(&info)
+                .assets(Assets::new().large_image("gentoo_box"));
+
+            // state (2nd line) is None if emerge doesn't have jobs running
+            let mut myphases = String::from("None"); // need to extend lifetime out of if-scope
+            if let Some(phases) = phases.clone() {
+                myphases = phases;
+                activity = activity.state(&myphases);
+            }
+
+            // start time is only set if jobs are running
+            // I think by default this will use time the activity was set
+            if let Some(time) = start_time {
+                activity = activity.timestamps(Timestamps::new().start(time));
+            }
 
             #[cfg(debug_assertions)]
             println!(
                 "Sending update: state=\"{}\", details=\"{}\", start_time=\"{}\"",
-                &second, &first, &start_time
+                &myphases,
+                &info,
+                &start_time.unwrap_or(-1)
             );
 
-            if let Err(e) = client.set_activity(
-                Activity::new()
-                    .state(&second)
-                    .details(&first)
-                    .timestamps(Timestamps::new().start(start_time as i64))
-                    .assets(Assets::new().large_image("gentoo_box")),
-            ) {
+            if let Err(e) = client.set_activity(activity) {
                 eprintln!("Error setting activity: {}", e);
                 should_reconnect = true;
             }
