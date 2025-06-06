@@ -41,6 +41,9 @@ impl RPCHandler {
             #[cfg(debug_assertions)]
             println!("Handler received update");
 
+            // track if we should reconnect
+            let mut should_reconnect = false;
+
             // clear on empty set
             if jobs.is_empty() {
                 // don't clear multiple times
@@ -120,6 +123,17 @@ impl RPCHandler {
                     .assets(Assets::new().large_image("gentoo_box")),
             ) {
                 eprintln!("Error setting activity: {}", e);
+                should_reconnect = true;
+            }
+
+            // if we encountered errors on the way we should probably reconnect...
+            if should_reconnect {
+                eprintln!("Encountered an error talking to Discord... trying to reconnect");
+                while let Err(e) = client.reconnect().map_err(|e| e.to_string()) {
+                    eprintln!("Connecting to Discord failed: {}", e);
+                    eprintln!("Retrying in 5 seconds");
+                    sleep(Duration::from_secs(5)).await;
+                }
             }
         }
 

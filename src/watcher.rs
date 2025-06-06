@@ -75,7 +75,7 @@ impl EbuildProcWatcher {
             }
 
             // look for running ebuild processes
-            for (pid, process) in &collector.processes {
+            for (_pid, process) in &collector.processes {
                 let cmdline = match process.cmdline_vec() {
                     Ok(maybe_cmdline) => match maybe_cmdline {
                         Some(cmdline) => cmdline,
@@ -96,7 +96,7 @@ impl EbuildProcWatcher {
                 }
 
                 #[cfg(debug_assertions)]
-                println!("Found ebuild process: {}", &pid);
+                println!("Found ebuild process: {}", &_pid);
 
                 // gather infos by walking up the tree
                 let mut current = process.clone();
