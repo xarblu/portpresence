@@ -79,9 +79,21 @@ impl RPCHandler {
             };
 
             // phase info of running jobs
-            let phases = match jobs.len() {
-                0 => None,
-                1 => Some(format!("Phase: {}", jobs[0].phase)),
+            let phases: Option<String>;
+            let mut phase_icon: Option<&str> = None;
+            match jobs.len() {
+                0 => phases = None,
+                1 => {
+                    phases = Some(format!("Phase: {}", jobs[0].phase));
+                    phase_icon = match jobs[0].phase.as_str() {
+                        "unpack" => Some("phase_unpack"),
+                        "prepare" => Some("phase_prepare"),
+                        "configure" => Some("phase_configure"),
+                        "compile" => Some("phase_compile"),
+                        "install" => Some("phase_install"),
+                        _ => None,
+                    };
+                }
                 _ => {
                     let mut counter: HashMap<String, u32> = HashMap::new();
                     for job in &jobs {
@@ -100,9 +112,9 @@ impl RPCHandler {
                             phases_vec.push(format!("{} ({})", phase, count));
                         }
                     }
-                    Some(format!("Phases: {}", phases_vec.join(", ")))
+                    phases = Some(format!("Phases: {}", phases_vec.join(", ")));
                 }
-            };
+            }
 
             // timestamp
             let start_time = match jobs.len() {
@@ -120,13 +132,11 @@ impl RPCHandler {
                 }
             };
 
-            let mut activity = Activity::new()
-                .details(&info)
-                .assets(Assets::new().large_image("gentoo_box"));
+            let mut activity = Activity::new().details(&info);
 
             // state (2nd line) is None if emerge doesn't have jobs running
             let _myphases; // need to extend lifetime out of if-scope
-            if let Some(phases) = phases.clone() {
+            if let Some(phases) = phases {
                 _myphases = phases;
                 activity = activity.state(&_myphases);
             } else {
@@ -138,6 +148,14 @@ impl RPCHandler {
             if let Some(time) = start_time {
                 activity = activity.timestamps(Timestamps::new().start(time));
             }
+
+            // add assets
+            let mut assets = Assets::new();
+            assets = assets.large_image("gentoo_box");
+            if let Some(phase_icon) = phase_icon {
+                assets = assets.small_image(phase_icon);
+            }
+            activity = activity.assets(assets);
 
             #[cfg(debug_assertions)]
             println!(
