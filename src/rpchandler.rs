@@ -7,6 +7,7 @@ use tokio::sync::mpsc::Receiver;
 use tokio::time::sleep;
 
 use crate::CLIENT_ID;
+use crate::portage_info::ebuild_version;
 use crate::watcher::ActiveJobs;
 
 pub(crate) struct RPCHandler {
@@ -37,6 +38,7 @@ impl RPCHandler {
         println!("Connected to Discord");
 
         let mut cleared = true;
+        let mut version_str: Option<String> = None;
         while let Some(job_trees) = self.rx.recv().await {
             #[cfg(debug_assertions)]
             println!("Handler received update");
@@ -58,7 +60,19 @@ impl RPCHandler {
                 }
                 continue;
             }
-            cleared = false;
+
+            // first iteration after clearing
+            // per-session tasks should go here
+            if cleared {
+                version_str = match ebuild_version() {
+                    Ok(ver) => Some(ver),
+                    Err(e) => {
+                        eprintln!("Error getting ebuild version: {}", e);
+                        None
+                    }
+                };
+                cleared = false;
+            }
 
             // now redefine jobs to a combination of all trees
             let mut jobs = Vec::new();
@@ -135,12 +149,8 @@ impl RPCHandler {
             let mut activity = Activity::new().details(&info);
 
             // state (2nd line) is None if emerge doesn't have jobs running
-            let _myphases; // need to extend lifetime out of if-scope
-            if let Some(phases) = phases {
-                _myphases = phases;
-                activity = activity.state(&_myphases);
-            } else {
-                _myphases = String::from("None");
+            if let Some(ref phases) = phases {
+                activity = activity.state(phases);
             }
 
             // start time is only set if jobs are running
@@ -152,15 +162,21 @@ impl RPCHandler {
             // add assets
             let mut assets = Assets::new();
             assets = assets.large_image("gentoo_box");
+            if let Some(ref version_str) = version_str {
+                assets = assets.large_text(version_str);
+            }
             if let Some(phase_icon) = phase_icon {
                 assets = assets.small_image(phase_icon);
+                if let Some(ref phases) = phases {
+                    assets = assets.small_text(phases);
+                }
             }
             activity = activity.assets(assets);
 
             #[cfg(debug_assertions)]
             println!(
                 "Sending update: state=\"{}\", details=\"{}\", start_time=\"{}\"",
-                &_myphases,
+                phases.clone().unwrap_or(String::from("None")),
                 &info,
                 &start_time.unwrap_or(-1)
             );

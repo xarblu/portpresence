@@ -1,3 +1,4 @@
+mod portage_info;
 mod rpchandler;
 mod watcher;
 
