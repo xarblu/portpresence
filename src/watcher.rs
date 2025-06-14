@@ -12,7 +12,7 @@ use crate::REFRESH_INTERVAL_WAITING;
 pub(crate) type ActiveJobs = HashMap<Pid, HashMap<Pid, EbuildJob>>;
 
 /// job metadata
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct EbuildJob {
     /// ebuild category
     pub(crate) category: String,
@@ -31,6 +31,17 @@ pub(crate) struct EbuildJob {
     /// this will reset with each phase
     /// TODO: maybe walk further up the proc tree and match `emerge` process
     pub(crate) create_time: Duration,
+}
+
+impl PartialEq<EbuildJob> for EbuildJob {
+    /// a job is equal if everything but create_time matches
+    /// create_time seems to vary slightly even with the same job
+    fn eq(&self, other: &EbuildJob) -> bool {
+        self.category == other.category
+            && self.package == other.package
+            && self.version == other.version
+            && self.phase == other.phase
+    }
 }
 
 /// struct for tracking ebuild processes
@@ -78,6 +89,9 @@ impl EbuildProcWatcher {
                 if !&collector.processes.contains_key(&master)
                     && self.active.remove(&master).is_some()
                 {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Changed: subtree removed");
+
                     changed = true;
                     continue;
                 }
@@ -88,6 +102,9 @@ impl EbuildProcWatcher {
                     if !&collector.processes.contains_key(&job)
                         && self.active.get_mut(&master).unwrap().remove(&job).is_some()
                     {
+                        #[cfg(debug_assertions)]
+                        eprintln!("Changed: job removed");
+
                         changed = true;
                         continue;
                     }
@@ -102,6 +119,10 @@ impl EbuildProcWatcher {
                     continue;
                 }
                 self.active.insert(process.pid(), HashMap::new());
+
+                #[cfg(debug_assertions)]
+                eprintln!("Changed: emerge master inserted");
+
                 changed = true;
             }
 
@@ -216,6 +237,10 @@ impl EbuildProcWatcher {
                                     .get_mut(&master.pid())
                                     .unwrap()
                                     .insert(current.pid(), new);
+
+                                #[cfg(debug_assertions)]
+                                eprintln!("Changed: tree inserted");
+
                                 changed = true;
                             }
                             Some(map) => match map.get(&current.pid()) {
@@ -225,6 +250,10 @@ impl EbuildProcWatcher {
                                         .get_mut(&master.pid())
                                         .unwrap()
                                         .insert(current.pid(), new);
+
+                                    #[cfg(debug_assertions)]
+                                    eprintln!("Changed: job inserted");
+
                                     changed = true;
                                 }
                                 Some(old) => {
@@ -237,6 +266,10 @@ impl EbuildProcWatcher {
                                         .get_mut(&master.pid())
                                         .unwrap()
                                         .insert(current.pid(), new);
+
+                                    #[cfg(debug_assertions)]
+                                    eprintln!("Changed: job updated");
+
                                     changed = true;
                                 }
                             },
