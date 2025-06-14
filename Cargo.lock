@@ -521,7 +521,7 @@ checksum = "0b02ffed1bc8c2234bb6f8e760e34613776c5102a041f25330b869a78153a68c"
 
 [[package]]
 name = "portpresence"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "discord-rich-presence",
  "futures",
