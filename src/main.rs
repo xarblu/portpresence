@@ -11,8 +11,9 @@ use crate::watcher::{ActiveJobs, EbuildProcWatcher};
 /// Discord API client ID
 const CLIENT_ID: &str = "1367276666665041960";
 
-// process refresh interval in seconds
-const REFRESH_INTERVAL: u64 = 5;
+// process refresh intervals in seconds
+const REFRESH_INTERVAL_WAITING: u64 = 5;
+const REFRESH_INTERVAL_ACTIVE: u64 = 1;
 
 #[tokio::main]
 async fn main() {

@@ -4,9 +4,10 @@ use psutil::process::{Process, ProcessCollector};
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::Sender;
-use tokio::time::{self, Duration};
+use tokio::time::{Duration, sleep};
 
-use crate::REFRESH_INTERVAL;
+use crate::REFRESH_INTERVAL_ACTIVE;
+use crate::REFRESH_INTERVAL_WAITING;
 
 pub(crate) type ActiveJobs = HashMap<Pid, HashMap<Pid, EbuildJob>>;
 
@@ -57,9 +58,11 @@ impl EbuildProcWatcher {
         // if this fails we want the panic
         let mut collector = ProcessCollector::new().unwrap();
 
-        let mut interval = time::interval(Duration::from_secs(REFRESH_INTERVAL));
+        // interval between checks, will be set to actual value later
+        let mut refresh_interval = Duration::from_secs(0);
+
         loop {
-            interval.tick().await;
+            sleep(refresh_interval).await;
             if let Err(e) = collector.update() {
                 eprintln!("Error updating processes: {}", e);
                 continue;
@@ -242,6 +245,14 @@ impl EbuildProcWatcher {
                         break; // got all we need from this tree
                     }
                 }
+            }
+
+            // increase poll rate while we have jobs to
+            // better capture phase changes
+            if !self.active.is_empty() {
+                refresh_interval = Duration::from_secs(REFRESH_INTERVAL_ACTIVE);
+            } else {
+                refresh_interval = Duration::from_secs(REFRESH_INTERVAL_WAITING);
             }
 
             // send the job list if changed
