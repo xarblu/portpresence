@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use discord_rich_presence::activity::{Assets, Timestamps};
+use discord_rich_presence::activity::{ActivityType, Assets, Timestamps};
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient, activity::Activity};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::sleep;
@@ -146,7 +146,9 @@ impl RPCHandler {
                 }
             };
 
-            let mut activity = Activity::new().details(&info);
+            let mut activity = Activity::new()
+                .details(&info)
+                .activity_type(ActivityType::Watching);
 
             // state (2nd line) is None if emerge doesn't have jobs running
             if let Some(ref phases) = phases {
